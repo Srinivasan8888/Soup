@@ -91,10 +91,29 @@ def magnitude_prune_tensor(tensor: Any, prune_ratio: float) -> Any:
     if k >= flat.numel():
         # keep the single largest
         k = flat.numel() - 1
-    # The k-th smallest absolute value: anything <= it gets zeroed
-    threshold = torch.kthvalue(flat, k).values
-    mask = tensor.detach().abs() > threshold
-    tensor.detach().mul_(mask.to(tensor.dtype))
+    keep = flat.numel() - k
+
+    # Survivors are chosen by INDEX, not by comparing against a threshold value.
+    #
+    # A threshold cannot express "keep exactly this many" once magnitudes tie.
+    # The previous form took the k-th smallest magnitude and kept
+    # `abs(t) > threshold`; when every entry has the same magnitude that
+    # threshold IS the common value, so nothing is strictly greater and the
+    # whole tensor was zeroed however many survivors were requested. The
+    # opposite comparison is no better: `>=` would keep every tied entry and
+    # prune nothing.
+    #
+    # That case is the default rather than an oddity -- PEFT initialises
+    # `lora_B` to zeros -- and zeroing both factors is not merely a bad step:
+    # `B @ A @ x` is then zero, so the gradient to each factor is zero and the
+    # adapter can never recover.
+    #
+    # `topk` returns exactly `keep` indices and breaks ties by position, so the
+    # count is guaranteed for any input and the choice is deterministic.
+    keep_idx = torch.topk(flat, keep).indices
+    mask = torch.zeros_like(flat, dtype=torch.bool)
+    mask[keep_idx] = True
+    tensor.detach().mul_(mask.reshape(tensor.shape).to(tensor.dtype))
     return tensor
 
 

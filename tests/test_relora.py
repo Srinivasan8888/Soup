@@ -357,3 +357,124 @@ class TestPruneAndReset:
         cb._prune_and_reset(model, opt)
         # State preserved when reset_optimizer=False
         assert len(opt.state[param]) == before
+
+
+class TestTiedMagnitudesKeepTheRequestedCount:
+    """#693 claim B: a constant tensor was wiped entirely.
+
+    `magnitude_prune_tensor` selected survivors with
+    ``mask = tensor.abs() > threshold`` -- strictly greater. When every entry
+    has the same magnitude the k-th smallest IS that magnitude, so nothing is
+    strictly greater and the whole tensor goes to zero, however many survivors
+    were requested.
+
+    That is not a constructed input. PEFT initialises ``lora_B`` to zeros by
+    convention, so an all-equal tensor is the state every LoRA adapter starts
+    in -- measured against a real PEFT model in
+    `test_a_freshly_initialised_lora_b_is_an_all_equal_tensor` below.
+
+    The consequence is a dead branch rather than a bad step: with both factors
+    at zero, ``B @ A @ x`` is zero and the gradient to each factor is zero, so
+    training cannot bring the adapter back.
+    """
+
+    @pytest.mark.parametrize(
+        "factory,ratio,expected_keep",
+        [
+            ("ones_10", 0.9, 1),
+            ("ones_10", 0.5, 5),
+            ("neg_const_10", 0.9, 1),
+            ("ones_4x8", 0.9, 4),
+            ("ones_4x8", 0.25, 24),
+        ],
+    )
+    def test_a_constant_tensor_keeps_exactly_the_requested_survivors(
+        self, factory, ratio, expected_keep
+    ):
+        torch = pytest.importorskip("torch")
+        from soup_cli.utils.relora import magnitude_prune_tensor
+
+        made = {
+            "ones_10": lambda: torch.ones(10),
+            "neg_const_10": lambda: torch.full((10,), -3.0),
+            "ones_4x8": lambda: torch.ones(4, 8),
+        }[factory]()
+
+        out = magnitude_prune_tensor(made.clone(), prune_ratio=ratio)
+        assert int((out != 0).sum()) == expected_keep, (
+            f"{factory} at prune_ratio={ratio} kept {int((out != 0).sum())} of "
+            f"{made.numel()}; every entry ties at the threshold and a strict "
+            "'>' comparison zeroes all of them"
+        )
+
+    def test_the_exact_count_holds_for_untied_input_too(self):
+        """Control: the guarantee must be about the count, not about ties.
+
+        This input has no ties at all, so it passed before the fix; it is here
+        so a fix that special-cases constant tensors and breaks the ordinary
+        path fails too.
+        """
+        torch = pytest.importorskip("torch")
+        from soup_cli.utils.relora import magnitude_prune_tensor
+
+        out = magnitude_prune_tensor(torch.arange(1.0, 11.0), prune_ratio=0.9)
+        assert int((out != 0).sum()) == 1
+        assert out.abs().max().item() == pytest.approx(10.0), (
+            "the survivor must be the largest-magnitude entry"
+        )
+
+    def test_the_largest_entries_are_the_survivors_when_partially_tied(self):
+        """A realistic middle case: some entries tie, some do not.
+
+        Six entries at 1.0 and two at 5.0, keeping 2 -- the two 5.0s must
+        survive and the tie must not swallow them.
+        """
+        torch = pytest.importorskip("torch")
+        from soup_cli.utils.relora import magnitude_prune_tensor
+
+        x = torch.tensor([1.0, 1.0, 5.0, 1.0, 1.0, 1.0, 5.0, 1.0])
+        out = magnitude_prune_tensor(x.clone(), prune_ratio=0.75)
+        assert int((out != 0).sum()) == 2
+        assert sorted(out[out != 0].abs().tolist()) == [5.0, 5.0]
+
+    def test_pruning_tied_factors_leaves_a_trainable_branch(self):
+        """The consequence, asserted rather than described.
+
+        Before the fix both factors went to all-zero, `B @ A @ x` was zero and
+        both gradients were exactly 0.0, so the adapter could never recover.
+        """
+        torch = pytest.importorskip("torch")
+        from soup_cli.utils.relora import magnitude_prune_tensor
+
+        a = torch.ones(4, 8, requires_grad=True)
+        b = torch.ones(8, 4, requires_grad=True)
+        with torch.no_grad():
+            magnitude_prune_tensor(a.data, 0.9)
+            magnitude_prune_tensor(b.data, 0.9)
+
+        (torch.randn(3, 8) @ a.T @ b.T).sum().backward()
+        assert a.grad.norm().item() > 0.0, "lora_A received no gradient"
+        assert b.grad.norm().item() > 0.0, "lora_B received no gradient"
+
+    def test_a_freshly_initialised_lora_b_is_an_all_equal_tensor(self):
+        """Why this matters in production rather than only in a fixture.
+
+        The maintainer asked on #693 whether a fresh `lora_B` is the natural
+        tie. It is, so the branch above is the state every adapter begins in.
+        """
+        pytest.importorskip("torch")
+        peft = pytest.importorskip("peft")
+        transformers = pytest.importorskip("transformers")
+        import torch
+
+        cfg = transformers.AutoConfig.from_pretrained("sshleifer/tiny-gpt2")
+        base = transformers.AutoModelForCausalLM.from_config(cfg)
+        model = peft.get_peft_model(
+            base, peft.LoraConfig(r=4, lora_alpha=8, target_modules=["c_attn"])
+        )
+        b_params = [p for n, p in model.named_parameters() if "lora_B" in n]
+        assert b_params, "no lora_B parameters were created"
+        assert all(torch.unique(p.detach()).numel() == 1 for p in b_params), (
+            "PEFT no longer initialises lora_B to a constant; the tie case may "
+            "no longer be the default state, though it is still reachable"
+        )
