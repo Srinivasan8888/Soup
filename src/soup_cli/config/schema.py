@@ -4454,6 +4454,16 @@ _MOE_AUX_LOSS_TASKS = frozenset({"sft", "tts", "pretrain"})
 _BNB_QUANTIZATION_VALUES = frozenset({"4bit", "8bit"})
 
 
+def _requested_fp8_settings(tcfg: "TrainingConfig") -> list[str]:
+    """The FP8 settings a config asked for explicitly, named as written (#1152)."""
+    settings: list[str] = []
+    if tcfg.quantization_aware == "fp8":
+        settings.append("quantization_aware='fp8'")
+    if tcfg.fp8_attention:
+        settings.append("fp8_attention")
+    return settings
+
+
 class SoupConfig(BaseModel):
     """Root config for soup.yaml."""
 
@@ -5744,6 +5754,19 @@ class SoupConfig(BaseModel):
                 f"training.stream_layers requires modality='text'; got "
                 f"modality={self.modality!r}."
             )
+        # #1152 -- streaming accepted FP8 and never applied it: the decoder
+        # layers are loaded onto a meta skeleton and substituted per step, and
+        # the streaming setup never calls the float8 converter, so a config
+        # saying FP8 trained without it and without a message.
+        fp8_settings = _requested_fp8_settings(tcfg)
+        if fp8_settings:
+            raise ValueError(
+                f"training.stream_layers is incompatible with training."
+                f"{' and '.join(fp8_settings)}: streamed layers are loaded onto a "
+                "meta skeleton and substituted per step, and are never converted "
+                "to Float8Linear. Train resident (stream_layers: false) for FP8, "
+                "or drop the FP8 setting to stream."
+            )
         if tcfg.quantization not in ("none", "4bit"):
             raise ValueError(
                 f"training.stream_layers supports quantization='none' or "
@@ -6240,6 +6263,22 @@ class SoupConfig(BaseModel):
         return self
 
     # ---- v0.53.0 Quant Menu II cross-validators ----------------------------
+
+    @model_validator(mode="after")
+    def _validate_fp8_backend(self) -> "SoupConfig":
+        """#1152 -- ``backend: unsloth`` accepted ``quantization_aware: fp8`` and
+        ``fp8_attention`` and never applied either: unsloth's setup loads through
+        FastLanguageModel and never calls the converter, so the run trained
+        without FP8 under a config that said FP8, with no message. The message
+        is ``utils/fp8.validate_fp8_config``'s, which nothing had called.
+        """
+        tcfg = self.training
+        settings = _requested_fp8_settings(tcfg)
+        if self.backend == "unsloth" and settings:
+            from soup_cli.utils.fp8 import FP8_UNSLOTH_REFUSAL
+
+            raise ValueError(f"training.{' and '.join(settings)}: {FP8_UNSLOTH_REFUSAL}")
+        return self
 
     @model_validator(mode="after")
     def _validate_fp8_attention_compat(self) -> "SoupConfig":

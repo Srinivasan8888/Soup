@@ -115,6 +115,15 @@ FP8_TORCHAO_MISSING = (
 )
 
 
+#: The unsloth refusal, shared by :func:`validate_fp8_config` and the config
+#: schema (#1152): unsloth's setup loads through its own FastLanguageModel
+#: path and never reaches the float8 converter.
+FP8_UNSLOTH_REFUSAL = (
+    "FP8 training is not compatible with the unsloth backend. "
+    "Unsloth uses its own fused kernels. Use backend: transformers."
+)
+
+
 class FP8HardwareUnsupportedError(RuntimeError):
     """An explicitly requested FP8 setting this card, OS or torch build cannot run.
 
@@ -302,10 +311,7 @@ def validate_fp8_config(
         return errors
 
     if backend == "unsloth":
-        errors.append(
-            "FP8 training is not compatible with the unsloth backend. "
-            "Unsloth uses its own fused kernels. Use backend: transformers."
-        )
+        errors.append(FP8_UNSLOTH_REFUSAL)
         return errors
 
     if backend == "mlx":

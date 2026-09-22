@@ -987,7 +987,11 @@ class TestSaveFormats:
 
 
 class TestCrossCutting:
-    def test_full_v053_roundtrip(self):
+    def test_full_v053_roundtrip_unsloth_now_refuses_the_fp8_half(self):
+        """INVERTED by #1152: this roundtrip loaded every v0.53 field at once on
+        backend: unsloth, FP8 included, and unsloth's setup never applied the
+        FP8. The FP8 pair is refused at load now; the other three fields still
+        round-trip on unsloth."""
         yaml_text = (
             "base: a/b\n"
             "task: sft\n"
@@ -995,14 +999,16 @@ class TestCrossCutting:
             "data: {train: x.jsonl}\n"
             "training:\n"
             "  quantization: 4bit\n"
-            "  quantization_aware: fp8\n"
-            "  fp8_attention: true\n"
             "  kv_cache_type: q8_0\n"
             "  unsloth_bnb_4bit: true\n"
             "  bnb_4bit_use_double_quant: true\n"
         )
+        with pytest.raises(ValueError, match=r"fp8_attention.*unsloth.*fused kernels"):
+            load_config_from_string(
+                yaml_text + "  quantization_aware: fp8\n  fp8_attention: true\n"
+            )
         cfg = load_config_from_string(yaml_text)
-        assert cfg.training.fp8_attention is True
+        assert cfg.training.fp8_attention is False
         assert cfg.training.kv_cache_type == "q8_0"
         assert cfg.training.unsloth_bnb_4bit is True
         assert cfg.training.bnb_4bit_use_double_quant is True

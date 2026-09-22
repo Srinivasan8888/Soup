@@ -1960,6 +1960,11 @@ class SFTTrainerWrapper(StreamingSetupMixin):
         )
         self.model = get_peft_model(self.model, lora_config)
 
+        # #1152 -- this branch never reached the FP8/QAT converters, so an audio
+        # config saying quantization_aware: fp8 trained without it and without a
+        # message. Same call, same place as the vision path.
+        self._apply_quantization_aware(tcfg)
+
     def _prepare_audio_dataset(self, dataset: dict):
         """Prepare dataset for audio fine-tuning with audio loading."""
         from datasets import Dataset
