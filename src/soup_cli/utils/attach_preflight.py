@@ -340,7 +340,13 @@ def loader_for(cfg: Any) -> tuple[str, ...]:
 
 
 def load_hf_config(base: str) -> Any:
-    """``config.json`` alone, anonymously, with remote code refused."""
+    """``config.json`` alone, with remote code refused.
+
+    No ``token=`` is passed on purpose: transformers defaults it to ``None`` and
+    huggingface_hub then reads ``HF_TOKEN`` from the environment, so a gated base
+    is verified where a token is present (a push to main in CI) and reported as
+    UNVERIFIED where one is not (a pull request), without a code path for each.
+    """
     from transformers import AutoConfig
 
     return AutoConfig.from_pretrained(base, trust_remote_code=False)

@@ -601,6 +601,69 @@ class TestTheCommand:
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
 
+    #: One row per verdict, unevenly, so a count that reads the wrong bucket
+    #: cannot coincide with the right one: 3 / 2 / 1 / 1.
+    _MIXED = (
+        ("a", Verdict.ATTACHES),
+        ("b", Verdict.ATTACHES),
+        ("c", Verdict.ATTACHES),
+        ("d", Verdict.UNVERIFIED),
+        ("e", Verdict.UNVERIFIED),
+        ("f", Verdict.CANNOT_ATTACH),
+        ("g", Verdict.NO_ADAPTER),
+    )
+
+    def _run_mixed(self, monkeypatch, *extra_args):
+        from rich.console import Console
+        from typer.testing import CliRunner
+
+        from soup_cli.cli import app
+        from soup_cli.commands import recipes as recipes_cmd
+
+        verdicts = dict(self._MIXED)
+        cfg = SimpleNamespace(base="org/m", task="sft")
+        # The module console caches an 80-column width under CliRunner and
+        # wraps the count line mid-phrase; pin it wide so the assert sees one line.
+        monkeypatch.setattr(recipes_cmd, "console", Console(width=200))
+        monkeypatch.setattr(
+            recipes_cmd, "_configs_to_verify",
+            lambda *_a, **_k: [(name, cfg) for name, _ in self._MIXED],
+        )
+        monkeypatch.setattr(
+            "soup_cli.utils.attach_preflight.check_attach",
+            lambda name, cfg, **_k: AttachCheck(
+                name, cfg.base, cfg.task, verdicts[name], detail="stubbed"
+            ),
+        )
+        return CliRunner().invoke(app, ["recipes", "verify", *extra_args])
+
+    def test_the_count_line_matches_the_rows(self, monkeypatch):
+        """The #1116 ruling: the report must say verified / skipped / failed
+        itself, so a token-less PR run is not read as full coverage."""
+        from tests.conftest import strip_ansi
+
+        result = self._run_mixed(monkeypatch)
+
+        assert result.exit_code == 1, result.output
+        assert (
+            "3 verified, 2 skipped (gated or unreadable, no token), "
+            "1 cannot attach, 1 no adapter."
+        ) in strip_ansi(result.output)
+
+    def test_json_keeps_the_count_line_off_stdout(self, monkeypatch):
+        """``--json`` stdout is the document; the count line lives in the rows
+        (one ``verdict`` each), not beside them."""
+        import json as _json
+
+        result = self._run_mixed(monkeypatch, "--json")
+
+        rows = _json.loads(result.stdout)
+        # "cannot_attach" is a verdict value; "cannot attach" is the count line.
+        assert "cannot attach" not in result.stdout
+        assert sorted(r["verdict"] for r in rows) == sorted(
+            v.value for _, v in self._MIXED
+        )
+
 
 class TestTheVerdictIsTheTrainers:
     """The check must answer for what the TRAINER does, not for a lookalike.

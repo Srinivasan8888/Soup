@@ -388,6 +388,24 @@ the exact materialization command after a late failure. The final manifest is
 written last and is the only commit marker; consumers must verify it and use only
 the SFT/DPO files it lists.
 
+### Recipe attach verification
+
+`soup recipes verify` builds each config's base architecture on the meta device
+from `config.json` alone and runs the real peft attach, so a recipe whose
+`target_modules` match nothing is caught before any weights are downloaded. Only
+a config that *cannot* attach exits 1. A base this machine cannot answer for (a
+gated repo with no `HF_TOKEN`, a repo needing `trust_remote_code`, a
+`model_type` this transformers cannot read) is skipped with its reason, never
+counted as a pass or a failure.
+
+The last line of the report is the coverage contract, and reads for example
+`142 verified, 33 skipped (gated or unreadable, no token), 0 cannot attach, 0 no
+adapter.` A run with skips is green but not full coverage. CI runs this as the
+`recipe attach` workflow: on a push to `main` with `HF_TOKEN` in scope, so gated
+bases are verified, and on pull requests without a token, so fork and same-repo
+PRs report the same coverage. It is deliberately not a required check: it
+fetches from the Hub, and a Hub outage must not be able to block merges.
+
 ## Fine-tune from your coding agent (MCP)
 
 `soup mcp serve` runs a [Model Context Protocol](https://modelcontextprotocol.io)

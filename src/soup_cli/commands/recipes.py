@@ -272,11 +272,13 @@ def _print_preflight(report, verdict_cls) -> None:
     attaches = report.by_verdict(verdict_cls.ATTACHES)
     experts = sum(1 for c in attaches if c.expert_modules)
     vision = [c.name for c in attaches if c.vision_modules]
+    # The count line is the CI contract (#1116 ruling): a pull-request run has
+    # no HF_TOKEN, so "skipped" is how a green run says it was not full coverage.
     console.print(
-        f"[green]{len(attaches)} attach[/], "
-        f"[red]{len(failures)} cannot[/], "
-        f"{len(report.by_verdict(verdict_cls.NO_ADAPTER))} have no adapter, "
-        f"{len(unverified)} unverified."
+        f"[green]{len(attaches)} verified[/], "
+        f"[yellow]{len(unverified)} skipped[/] [dim](gated or unreadable, no token)[/], "
+        f"[red]{len(failures)} cannot attach[/], "
+        f"{len(report.by_verdict(verdict_cls.NO_ADAPTER))} no adapter."
     )
     if experts:
         console.print(f"[dim]{experts} adapted expert modules.[/]")
