@@ -432,6 +432,9 @@ def post_processor_leading_bos_count(tokenizer: Any) -> Optional[int]:
     Measured once per tokenizer by encoding a plain probe string with
     ``add_special_tokens=True``: the text holds no BOS of its own, so every leading
     BOS is the post-processor's, independent of anything a chat template renders.
+    That measures a ``TemplateProcessing``-style post-processor, which adds the same
+    specials to every input; a content-conditional post-processor could mis-measure
+    it, and the ``None`` fallback covers the probe failing, not the probe lying.
     ``None`` means it could not be measured, and the caller falls back to
     :func:`strip_doubled_leading_bos`.
     """
