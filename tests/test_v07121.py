@@ -388,8 +388,8 @@ class TestV028PrecisionWiring:
     def _card_that_can_run_fp8(self, monkeypatch):
         """#1044 review moved the hardware gate ahead of the dependency probe, so
         an explicit FP8 request on a CPU box is now refused rather than degraded.
-        These tests are about the degrade paths, so they run on a Hopper card;
-        tests/test_issue835_fp8_gate.py owns the hardware refusal itself."""
+        These tests are about what happens past the gate, so they run on a Hopper
+        card; tests/test_issue835_fp8_gate.py owns the hardware refusal itself."""
         import sys
 
         import torch
@@ -419,7 +419,12 @@ class TestV028PrecisionWiring:
             "cut_ce": False, "fp8": False, "kernel_auto_compose": False,
         }
 
-    def test_fp8_attention_gate_failure_degrades(self, monkeypatch):
+    def test_fp8_attention_converter_failure_stops_the_run(self, monkeypatch):
+        """INVERTED by #1152 (rows 4-5): this test used to pin
+        ``applied["fp8_attention"] is False`` plus a yellow line. A RuntimeError
+        from the converter is its own refusal (a partial conversion, or no
+        attention projections), and an explicitly requested FP8 no longer
+        trains on past it."""
         from soup_cli.utils.v028_features import apply_v028_speed_memory
 
         def _gate(model, **kwargs):
@@ -433,12 +438,12 @@ class TestV028PrecisionWiring:
         # quantization_aware: fp8 is set too, and a missing torchao now stops the
         # run (#835 ruling); this test is about fp8_attention, so stub that half.
         monkeypatch.setattr("soup_cli.utils.fp8.apply_fp8_training", lambda *_a, **_k: True)
-        result = apply_v028_speed_memory(
-            model=object(),
-            tcfg=self._tcfg(quantization_aware="fp8", fp8_attention=True),
-            base_model="x/y",
-        )
-        assert result["fp8_attention"] is False
+        with pytest.raises(RuntimeError, match="no Hopper"):
+            apply_v028_speed_memory(
+                model=object(),
+                tcfg=self._tcfg(quantization_aware="fp8", fp8_attention=True),
+                base_model="x/y",
+            )
 
     def test_fp8_attention_applied(self, monkeypatch):
         from soup_cli.utils.v028_features import apply_v028_speed_memory
@@ -1684,8 +1689,8 @@ class TestReviewFollowupsPrecision:
     def _card_that_can_run_fp8(self, monkeypatch):
         """#1044 review moved the hardware gate ahead of the dependency probe, so
         an explicit FP8 request on a CPU box is now refused rather than degraded.
-        These tests are about the degrade paths, so they run on a Hopper card;
-        tests/test_issue835_fp8_gate.py owns the hardware refusal itself."""
+        These tests are about what happens past the gate, so they run on a Hopper
+        card; tests/test_issue835_fp8_gate.py owns the hardware refusal itself."""
         import sys
 
         import torch
@@ -1762,10 +1767,12 @@ class TestReviewFollowupsPrecision:
         with pytest.raises(RuntimeError, match="quantize_"):
             apply_nvfp4(_tiny_attn_model())
 
-    def test_v028_degrade_is_hermetic(self, monkeypatch):
-        """Force the degrade path by patching the converters directly —
-        environment-independent (review fix: the original test relied on
-        the host lacking torchao/Hopper)."""
+    def test_v028_fp8_attention_stop_and_nvfp4_degrade_are_hermetic(self, monkeypatch):
+        """INVERTED for fp8_attention by #1152 (rows 4-5); the nvfp4 half is
+        unchanged and kept as the control. Both converters are patched directly
+        (review fix: the original test relied on the host lacking
+        torchao/Hopper). A failing fp8_attention converter ends the run; a
+        failing nvfp4 converter still degrades to a yellow line."""
         from soup_cli.config.loader import load_config_from_string
         from soup_cli.utils import advanced_precision, v028_features
 
@@ -1790,11 +1797,21 @@ class TestReviewFollowupsPrecision:
             "  train: data.jsonl\n"
             "output: ./out\n"
         )
+        with pytest.raises(RuntimeError, match="gate fired"):
+            v028_features.apply_v028_speed_memory(
+                model=object(), tcfg=cfg.training, base_model=cfg.base,
+                console=None, device="cpu", backend="transformers",
+            )
+        # Control: with fp8_attention converting, the nvfp4 failure alone still
+        # degrades -- that block's behaviour is not part of #1152.
+        monkeypatch.setattr(
+            advanced_precision, "apply_fp8_attention", lambda model, recipe="tensorwise": 4
+        )
         applied = v028_features.apply_v028_speed_memory(
             model=object(), tcfg=cfg.training, base_model=cfg.base,
             console=None, device="cpu", backend="transformers",
         )
-        assert applied.get("fp8_attention") is False
+        assert applied.get("fp8_attention") is True
         assert applied.get("nvfp4") is False
 
 
